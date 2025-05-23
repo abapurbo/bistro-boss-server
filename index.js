@@ -1,4 +1,5 @@
 require('dotenv').config()
+const stripe = require('stripe')(process.env.STRIPE_PAYMENT_SECRETE)
 const jwt = require('jsonwebtoken');
 const express = require('express')
 const cors = require('cors');
@@ -47,6 +48,18 @@ const run = async () => {
             const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '1h' })
             res.send({ token })
         })
+        app.post('/create-payment-intent', async (req, res) => {
+            const {price}= req.body;
+            const amount = parseInt(price * 100);
+            const paymentIntent=await stripe.paymentIntent.create({
+                amount:amount,
+                currency:'usd',
+                payment_method_types:['card']
+            });
+            res.send({
+                clientSecret:paymentIntent.client_secret
+            })
+        })
         const verifyAdmin = async (req, res, next) => {
             const email = req.decoded.email;
             const query = { email: email };
@@ -57,6 +70,7 @@ const run = async () => {
             }
             next()
         }
+
         app.get('/menus', async (req, res) => {
             const menu = await orderCollection.find().toArray()
             res.send(menu)
@@ -119,15 +133,15 @@ const run = async () => {
             const filter = { _id: id };
             const updateDoc = {
                 $set: {
-                    name:menu.name,
-                    recipe:menu.recipe,
-                    image:menu.image,
-                    price:menu.price,
-                    category:menu.category
+                    name: menu.name,
+                    recipe: menu.recipe,
+                    image: menu.image,
+                    price: menu.price,
+                    category: menu.category
                 }
             }
-            const result=await orderCollection.updateOne(filter,updateDoc);
-            res.send(result); 
+            const result = await orderCollection.updateOne(filter, updateDoc);
+            res.send(result);
         })
         app.patch('/users/admin/:id', verifyToken, async (req, res) => {
             const id = req.params.id;
