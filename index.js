@@ -70,7 +70,7 @@ const run = async () => {
             }
             next()
         }
-        await client.connect()
+        // await client.connect()
         const userCollection = client.db('bistroDB').collection("users")
         const orderCollection = client.db('bistroDB').collection("menu")
         const reviewCollection = client.db('bistroDB').collection("reviews")
@@ -310,8 +310,8 @@ const run = async () => {
             const result = await CartCollection.deleteOne(query)
             res.send(result)
         })
-        await client.db("admin").command({ ping: 1 });
-        console.log("Mongodb database successfully connected......")
+        // await client.db("admin").command({ ping: 1 });
+        // console.log("Mongodb database successfully connected......")
     }
 
     catch (error) {
