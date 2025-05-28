@@ -5,11 +5,33 @@ const express = require('express')
 const cors = require('cors');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const app = express()
+const nodemailer = require("nodemailer");
+const { from } = require('form-data');
+// const FormData = require('form-data')
+// const Mailgun = require('mailgun.js')
+// const mailgun = new Mailgun(FormData);
+// const mg = mailgun.client({
+//     username: "api",
+//     key: process.env.API_KEY || "API_KEY",
+//     // When you have an EU-domain, you must specify the endpoint:
+//     // url: "https://api.eu.mailgun.net"
+// });
+
+// nodemailer setup
+const transporter = nodemailer.createTransport({
+    host: "smtp.gmail.com",
+    port: 465,
+    secure: true, // true for 465, false for other ports
+    auth: {
+        user: "absarker238@gmail.com",
+        pass: "ripbektaraoikxra",
+    },
+});
 const port = process.env.PORT || 5000;
 
 app.use(express.json())
 app.use(cors())
-
+console.log(process.env.MAIL_SENDING_DOMAIN)
 // jwt verify token
 const verifyToken = (req, res, next) => {
     if (!req.headers.authorization) {
@@ -38,28 +60,6 @@ const client = new MongoClient(uri, {
 
 const run = async () => {
     try {
-        await client.connect()
-        const userCollection = client.db('bistroDB').collection("users")
-        const orderCollection = client.db('bistroDB').collection("menu")
-        const reviewCollection = client.db('bistroDB').collection("reviews")
-        const CartCollection = client.db('bistroDB').collection('carts')
-        app.post('/jwt', async (req, res) => {
-            const user = req.body;
-            const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '1h' })
-            res.send({ token })
-        })
-        app.post('/create-payment-intent', async (req, res) => {
-            const {price}= req.body;
-            const amount = parseInt(price * 100);
-            const paymentIntent=await stripe.paymentIntent.create({
-                amount:amount,
-                currency:'usd',
-                payment_method_types:['card']
-            });
-            res.send({
-                clientSecret:paymentIntent.client_secret
-            })
-        })
         const verifyAdmin = async (req, res, next) => {
             const email = req.decoded.email;
             const query = { email: email };
@@ -70,6 +70,136 @@ const run = async () => {
             }
             next()
         }
+        await client.connect()
+        const userCollection = client.db('bistroDB').collection("users")
+        const orderCollection = client.db('bistroDB').collection("menu")
+        const reviewCollection = client.db('bistroDB').collection("reviews")
+        const CartCollection = client.db('bistroDB').collection('carts')
+        const paymentCollection = client.db('bistroDB').collection('payments')
+        app.post('/jwt', async (req, res) => {
+            const user = req.body;
+            const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '1h' })
+            res.send({ token })
+        })
+        app.post('/create-payment-intent', async (req, res) => {
+            const { price } = req.body;
+            const amount = parseInt(price * 100);
+            const paymentIntent = await stripe.paymentIntents.create({
+                amount: amount,
+                currency: 'usd',
+                payment_method_types: ['card']
+            });
+            res.send({
+                clientSecret: paymentIntent.client_secret
+            })
+        })
+        app.get('/payments/:email', verifyToken, async (req, res) => {
+            const query = { email: req.params.email };
+            if (req.params.email !== req.decoded.email) {
+                return res.status(403).send({ message: 'Forbidden Access' })
+            }
+            const result = await paymentCollection.find(query).toArray();
+            res.send(result);
+        })
+        app.get('/admin-stats', verifyToken, verifyAdmin, async (req, res) => {
+            const user = await userCollection.estimatedDocumentCount();
+            const menuItem = await orderCollection.estimatedDocumentCount();
+            const order = await paymentCollection.estimatedDocumentCount();
+
+            // this is not best way;
+            // const payments = await paymentCollection.find().toArray();
+            // const revenue = payments.reduce((total, item) => total + item.price, 0)
+            const result = await paymentCollection.aggregate([
+                {
+                    $group: {
+                        _id: null,//sobgulo id er jonno null count kora hoyche other wise specific id 
+                        totalRevenue: {
+                            $sum: '$price'
+                        }
+                    }
+                }
+            ]).toArray()
+            const revenue = result.length > 0 ? result[0].totalRevenue : 0
+            res.send({
+                user, menuItem, order, revenue
+            })
+        })
+        /*
+         *----------------------------
+         *       NO-Efficient Way
+         *  ----------------------------
+         * 1.Load all the payments
+         * 2.for every menuItems (which is an array), go find item for menu collection
+         * 3.for every item in the menu collection that you found from a payment entry (document)
+         */
+
+        //  using aggregate pipeline
+        app.get('/order-stats',verifyToken,verifyAdmin, async (req, res) => {
+            const result = await paymentCollection.aggregate([
+                {
+                    $unwind: "$menuIds"
+                },
+                {
+                    $lookup: {
+                         from:'menu',
+                         localField:'menuIds',
+                         foreignField:'_id',
+                         as:'menuItems'
+                    }
+                },{
+                    $unwind:'$menuItems'
+                }
+                ,{
+                    $group:{
+                        _id:'$menuItems.category',
+                        quantity:{$sum:1},
+                        revenue:{$sum:'$menuItems.price'}
+                    }
+                },{
+                    $project:{
+                        _id:0,
+                        category:'$_id',
+                        quantity:'$quantity',
+                        revenue:"$revenue"
+
+
+                    }
+                }
+            ]).toArray()
+            res.send(result)
+        })
+        app.post('/payments', verifyToken, async (req, res) => {
+            const payment = req.body;
+            const paymentResult = await paymentCollection.insertOne(payment);
+            const query = {
+                _id: {
+                    $in: payment.cartIds.map(id => new ObjectId(id))
+                }
+            }
+            const deleteResult = await CartCollection.deleteMany(query)
+            // node mailer  setup
+
+            transporter.sendMail({
+                from: 'Maddison Foo Koch <maddison53@ethereal.email>',
+                to: "absarker238@gmail.com",
+                subject: "Bistro Boss Order Confirmation",
+                text: "Congratulations Apurbo sarker, you just sent an email with Mailgun! You are truly awesome!", // plain‑text body
+                html: `
+                           <div>
+                           <h1>Thank you for your order</h1>
+                           <h1>Your Transaction Id:<strong>${payment.transactionId}</strong></h1>
+                           <p>We would like to get your feedback about the food</p>
+                           </div>                
+                      `
+            })
+                .then(transporter => console.log(transporter))
+                .catch(err => console.log("error", err))
+
+
+
+            res.send({ paymentResult, deleteResult })
+        })
+
 
         app.get('/menus', async (req, res) => {
             const menu = await orderCollection.find().toArray()
@@ -85,7 +215,7 @@ const run = async () => {
             const review = await reviewCollection.find().toArray()
             res.send(review)
         })
-        app.get('/carts', async (req, res) => {
+        app.get('/carts', verifyToken, async (req, res) => {
             const email = req.query.email;
             const query = { email: email }
             const result = await CartCollection.find(query).toArray()
